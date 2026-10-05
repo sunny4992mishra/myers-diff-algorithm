@@ -2,9 +2,9 @@ import sys
 
 
 def read_file_lines(path: str) -> list[bytes]:
-    """Reads a file as raw bytes, splits on b'\\n', drops trailing empty piece,
+    """Reads a file as raw bytes, splits on b'\\n', drops the trailing empty
 
-    and preserves any carriage return b'\\r'.
+    piece if present, and preserves any carriage return b'\\r'.
     """
     with open(path, "rb") as f:
         data = f.read()
@@ -18,135 +18,128 @@ def read_file_lines(path: str) -> list[bytes]:
     return lines
 
 
-def myers_diff(a: list, b: list) -> list[tuple[str, any]]:
-    """Computes a minimal edit script between sequences a and b using Myers'
+def _myers_core(A: list, B: list) -> list[tuple[str, any]]:
+    """Core O(ND) Myers diff algorithm using 0-indexed diagonal arrays."""
+    N = len(A)
+    M = len(B)
 
-    algorithm.
-
-    Includes prefix/suffix trimming to run in O(D) time.
-    """
-    n, m = len(a), len(b)
-
-    if a == b:
-        return [(" ", item) for item in a]
-
-    # 1. Common prefix trimming
-    start = 0
-    while start < n and start < m and a[start] == b[start]:
-        start += 1
-
-    # 2. Common suffix trimming
-    end_a, end_b = n, m
-    while end_a > start and end_b > start and a[end_a - 1] == b[end_b - 1]:
-        end_a -= 1
-        end_b -= 1
-
-    prefix = [(" ", a[i]) for i in range(start)]
-    suffix = [(" ", a[i]) for i in range(end_a, n)]
-
-    mid_a = a[start:end_a]
-    mid_b = b[start:end_b]
-
-    mid_script = myers_core(mid_a, mid_b)
-    return prefix + mid_script + suffix
-
-
-def myers_core(a: list, b: list) -> list[tuple[str, any]]:
-    """Core Myers O(ND) algorithm for the trimmed middle section."""
-    n, m = len(a), len(b)
-    if n == 0 and m == 0:
+    if N == 0 and M == 0:
         return []
-    if n == 0:
-        return [("+", item) for item in b]
-    if m == 0:
-        return [("-", item) for item in a]
+    if N == 0:
+        return [("+", item) for item in B]
+    if M == 0:
+        return [("-", item) for item in A]
 
-    max_d = n + m
-    offset = max_d
-    v = [0] * (2 * max_d + 1)
-    trace = []
+    # Map elements to unique integer IDs for fast comparison in snakes
+    item_ids = {}
+    id_A = [item_ids.setdefault(item, len(item_ids)) for item in A]
+    id_B = [item_ids.setdefault(item, len(item_ids)) for item in B]
 
-    for d in range(max_d + 1):
-        for k in range(-d, d + 1, 2):
-            idx = k + offset
-            if k == -d or (k != d and v[idx - 1] < v[idx + 1]):
-                x = v[idx + 1]  # vertical step (insert from b)
+    history = []
+
+    # d = 0: initial snake from (0, 0)
+    x = 0
+    y = 0
+    while x < N and y < M and id_A[x] == id_B[y]:
+        x += 1
+        y += 1
+    history.append([x])
+
+    if x >= N and y >= M:
+        return [(" ", item) for item in A]
+
+    d = 0
+    found = False
+    while not found:
+        d += 1
+        prev = history[d - 1]
+        curr = [0] * (d + 1)
+
+        # Diagonals k = -d, -d+2, ..., d mapped to index i in 0 .. d
+        for i in range(d + 1):
+            k = -d + 2 * i
+
+            if i == 0:
+                x = prev[0]  # Vertical move (insertion)
+            elif i == d:
+                x = prev[d - 1] + 1  # Horizontal move (deletion)
             else:
-                x = v[idx - 1] + 1  # horizontal step (delete from a)
+                p_left = prev[i - 1]  # from k - 1
+                p_right = prev[i]  # from k + 1
+                x = p_right if p_left < p_right else p_left + 1
+
             y = x - k
 
-            # Snake: follow matching elements
-            while x < n and y < m and a[x] == b[y]:
+            # Snake: greedily advance along matching diagonals
+            while x < N and y < M and id_A[x] == id_B[y]:
                 x += 1
                 y += 1
 
-            v[idx] = x
-            if x >= n and y >= m:
-                trace.append(v[offset - d : offset + d + 1])
-                return backtrack(trace, a, b, d, k)
+            curr[i] = x
 
-        trace.append(v[offset - d : offset + d + 1])
+            if x >= N and y >= M:
+                found = True
+                history.append(curr)
+                break
 
-    return []
+        if not found:
+            history.append(curr)
 
-
-def backtrack(
-    trace: list[list[int]], a: list, b: list, d: int, k: int
-) -> list[tuple[str, any]]:
-    """Backtracks through trace to reconstruct the shortest edit script."""
-    n, m = len(a), len(b)
+    # Backtrack from (N, M) to (0, 0)
     script = []
-    x, y = n, m
+    curr_x = N
+    curr_y = M
 
-    for step in range(d, 0, -1):
-        v_prev = trace[step - 1]
-        idx_prev = step - 1
+    for step_d in range(d, 0, -1):
+        k = curr_x - curr_y
+        i = (k + step_d) // 2
+        prev = history[step_d - 1]
 
-        def get_v_prev(k_val: int) -> int:
-            return v_prev[k_val + idx_prev]
-
-        if k == -step:
+        if i == 0:
             prev_k = k + 1
-        elif k == step:
+            prev_i = 0
+        elif i == step_d:
             prev_k = k - 1
-        elif get_v_prev(k - 1) < get_v_prev(k + 1):
-            prev_k = k + 1
+            prev_i = step_d - 1
         else:
-            prev_k = k - 1
+            if prev[i - 1] < prev[i]:
+                prev_k = k + 1
+                prev_i = i
+            else:
+                prev_k = k - 1
+                prev_i = i - 1
 
-        prev_x = get_v_prev(prev_k)
+        prev_x = prev[prev_i]
         prev_y = prev_x - prev_k
 
-        if prev_k == k + 1:
-            x_edit = prev_x
-            y_edit = prev_y + 1
+        if prev_k == k - 1:
+            # Horizontal move: Deletion of A[prev_x]
+            snake_len = curr_x - (prev_x + 1)
+            for s in range(snake_len - 1, -1, -1):
+                script.append((" ", A[prev_x + 1 + s]))
+            script.append(("-", A[prev_x]))
         else:
-            x_edit = prev_x + 1
-            y_edit = prev_y
+            # Vertical move: Insertion of B[prev_y]
+            snake_len = curr_x - prev_x
+            for s in range(snake_len - 1, -1, -1):
+                script.append((" ", B[prev_y + 1 + s]))
+            script.append(("+", B[prev_y]))
 
-        while x > x_edit and y > y_edit:
-            script.append((" ", a[x - 1]))
-            x -= 1
-            y -= 1
+        curr_x = prev_x
+        curr_y = prev_y
 
-        if prev_k == k + 1:
-            script.append(("+", b[y_edit - 1]))
-        else:
-            script.append(("-", a[x_edit - 1]))
-
-        x, y, k = prev_x, prev_y, prev_k
-
-    while x > 0 and y > 0:
-        script.append((" ", a[x - 1]))
-        x -= 1
-        y -= 1
+    for s in range(curr_x - 1, -1, -1):
+        script.append((" ", A[s]))
 
     script.reverse()
     return script
 
 
 def indices_to_ranges(indices: list[int]) -> str:
-    """Converts character indices to formatted, merged half-open ranges."""
+    """Converts 0-indexed character indices to formatted, merged half-open
+
+    ranges.
+    """
     if not indices:
         return "."
     ranges = []
@@ -163,6 +156,28 @@ def indices_to_ranges(indices: list[int]) -> str:
     return ",".join(f"{s}-{e}" for s, e in ranges)
 
 
+def myers_diff_chars(a: list[str], b: list[str]) -> list[tuple[str, str]]:
+    """Runs Myers diff on character sequences with prefix/suffix trimming."""
+    n, m = len(a), len(b)
+    if a == b:
+        return [(" ", ch) for ch in a]
+
+    start = 0
+    while start < n and start < m and a[start] == b[start]:
+        start += 1
+
+    end_a, end_b = n, m
+    while end_a > start and end_b > start and a[end_a - 1] == b[end_b - 1]:
+        end_a -= 1
+        end_b -= 1
+
+    prefix = [(" ", a[i]) for i in range(start)]
+    suffix = [(" ", a[i]) for i in range(end_a, n)]
+
+    mid_script = _myers_core(a[start:end_a], b[start:end_b])
+    return prefix + mid_script + suffix
+
+
 def compute_highlight(old_bytes: bytes, new_bytes: bytes) -> str:
     """Computes character differences for paired lines in Unicode code
 
@@ -174,7 +189,7 @@ def compute_highlight(old_bytes: bytes, new_bytes: bytes) -> str:
     chars_old = list(old_str)
     chars_new = list(new_str)
 
-    char_script = myers_diff(chars_old, chars_new)
+    char_script = myers_diff_chars(chars_old, chars_new)
 
     old_idx = 0
     new_idx = 0
@@ -198,73 +213,93 @@ def compute_highlight(old_bytes: bytes, new_bytes: bytes) -> str:
 
 
 def run_diff(command: str, lines_a: list[bytes], lines_b: list[bytes]) -> None:
-    """Executes diff and outputs formatted lines obeying the delete-first
+    """Executes diff, streaming common prefix and suffix without intermediate
 
-    rule.
+    tuple allocation, and diffing only the middle segment.
     """
     out = sys.stdout.buffer
 
     if not lines_a and not lines_b:
         return
 
-    # Intern lines to integer IDs for fast comparison
-    intern_map: dict[bytes, int] = {}
-    tokens_a = [intern_map.setdefault(l, len(intern_map)) for l in lines_a]
-    tokens_b = [intern_map.setdefault(l, len(intern_map)) for l in lines_b]
+    n = len(lines_a)
+    m = len(lines_b)
 
-    diff_tokens = myers_diff(tokens_a, tokens_b)
-
-    a_ptr, b_ptr = 0, 0
-    script = []
-    for op, _ in diff_tokens:
-        if op == " ":
-            script.append((" ", lines_a[a_ptr]))
-            a_ptr += 1
-            b_ptr += 1
-        elif op == "-":
-            script.append(("-", lines_a[a_ptr]))
-            a_ptr += 1
-        elif op == "+":
-            script.append(("+", lines_b[b_ptr]))
-            b_ptr += 1
-
-    current_minuses: list[bytes] = []
-    current_pluses: list[bytes] = []
-
-    def flush_block():
-        nonlocal current_minuses, current_pluses
-        if not current_minuses and not current_pluses:
-            return
-
-        if command == "lines":
-            for line in current_minuses:
-                out.write(b"-" + line + b"\n")
-            for line in current_pluses:
-                out.write(b"+" + line + b"\n")
-        else:
-            for line in current_minuses:
-                out.write(b"-" + line + b"\n")
-
-            num_pairs = min(len(current_minuses), len(current_pluses))
-            for i, line in enumerate(current_pluses):
-                out.write(b"+" + line + b"\n")
-                if i < num_pairs:
-                    h_str = compute_highlight(current_minuses[i], line)
-                    out.write(h_str.encode("utf-8") + b"\n")
-
-        current_minuses = []
-        current_pluses = []
-
-    for op, line in script:
-        if op == " ":
-            flush_block()
+    # 1. Fast path: identical files
+    if lines_a == lines_b:
+        for line in lines_a:
             out.write(b" " + line + b"\n")
-        elif op == "-":
-            current_minuses.append(line)
-        elif op == "+":
-            current_pluses.append(line)
+        return
 
-    flush_block()
+    # 2. Stream common prefix directly
+    start = 0
+    while start < n and start < m and lines_a[start] == lines_b[start]:
+        out.write(b" " + lines_a[start] + b"\n")
+        start += 1
+
+    # 3. Find common suffix
+    end_a, end_b = n, m
+    while (
+        end_a > start
+        and end_b > start
+        and lines_a[end_a - 1] == lines_b[end_b - 1]
+    ):
+        end_a -= 1
+        end_b -= 1
+
+    # 4. Diff only the middle segment
+    mid_a = lines_a[start:end_a]
+    mid_b = lines_b[start:end_b]
+
+    if mid_a or mid_b:
+        mid_diff = _myers_core(mid_a, mid_b)
+
+        current_minuses: list[bytes] = []
+        current_pluses: list[bytes] = []
+
+        def flush_block():
+            nonlocal current_minuses, current_pluses
+            if not current_minuses and not current_pluses:
+                return
+
+            if command == "lines":
+                for line in current_minuses:
+                    out.write(b"-" + line + b"\n")
+                for line in current_pluses:
+                    out.write(b"+" + line + b"\n")
+            else:
+                for line in current_minuses:
+                    out.write(b"-" + line + b"\n")
+
+                num_pairs = min(len(current_minuses), len(current_pluses))
+                for i, line in enumerate(current_pluses):
+                    out.write(b"+" + line + b"\n")
+                    if i < num_pairs:
+                        h_str = compute_highlight(current_minuses[i], line)
+                        out.write(h_str.encode("utf-8") + b"\n")
+
+            current_minuses = []
+            current_pluses = []
+
+        a_ptr, b_ptr = 0, 0
+        for op, _ in mid_diff:
+            if op == " ":
+                flush_block()
+                out.write(b" " + mid_a[a_ptr] + b"\n")
+                a_ptr += 1
+                b_ptr += 1
+            elif op == "-":
+                current_minuses.append(mid_a[a_ptr])
+                a_ptr += 1
+            elif op == "+":
+                current_pluses.append(mid_b[b_ptr])
+                b_ptr += 1
+
+        flush_block()
+
+    # 5. Stream common suffix directly
+    for i in range(end_a, n):
+        out.write(b" " + lines_a[i] + b"\n")
 
 
 def main() -> int:
